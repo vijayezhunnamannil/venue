@@ -3,6 +3,7 @@ import sqlite3
 from datetime import datetime
 import pandas as pd
 import io
+import os
 
 app = Flask(__name__)
 app.secret_key = 'your_secret_key'
@@ -19,12 +20,11 @@ def init_db():
         CREATE TABLE IF NOT EXISTS bookings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
-            email TEXT NOT NULL,
             venue TEXT NOT NULL,
             date TEXT NOT NULL,
-            start_time TEXT NOT NULL,
-            end_time TEXT NOT NULL,
-            purpose TEXT NOT NULL
+            time TEXT NOT NULL,
+            purpose TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
     conn.commit()
@@ -38,78 +38,57 @@ def index():
 def book():
     if request.method == 'POST':
         name = request.form['name']
-        email = request.form['email']
         venue = request.form['venue']
         date = request.form['date']
-        start_time = request.form['start_time']
-        end_time = request.form['end_time']
+        time = request.form['time']
         purpose = request.form['purpose']
 
         conn = sqlite3.connect('bookings.db')
         c = conn.cursor()
-
-        # Conflict check
-        c.execute("""SELECT * FROM bookings WHERE venue = ? AND date = ? AND (
-                        (? BETWEEN start_time AND end_time) OR
-                        (? BETWEEN start_time AND end_time) OR
-                        (start_time BETWEEN ? AND ?) OR
-                        (end_time BETWEEN ? AND ?)
-                    )""",
-                  (venue, date, start_time, end_time, start_time, end_time, start_time, end_time))
-        conflicts = c.fetchall()
-
-        if conflicts:
-            flash('Venue is already booked for the selected time.', 'danger')
-        else:
-            c.execute("""INSERT INTO bookings (name, email, venue, date, start_time, end_time, purpose)
-                         VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                      (name, email, venue, date, start_time, end_time, purpose))
-            conn.commit()
-            flash('Venue booked successfully!', 'success')
-
+        c.execute("INSERT INTO bookings (name, venue, date, time, purpose) VALUES (?, ?, ?, ?, ?)",
+                  (name, venue, date, time, purpose))
+        conn.commit()
         conn.close()
-        return redirect(url_for('book'))
+
+        flash('Venue booked successfully!')
+        return redirect(url_for('index'))
 
     return render_template('book.html')
 
-@app.route('/login', methods=['GET', 'POST'])
-def login():
+@app.route('/admin', methods=['GET', 'POST'])
+def admin_login():
     if request.method == 'POST':
         username = request.form['username']
         password = request.form['password']
+
         if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
-            session['admin'] = True
-            flash('Logged in successfully!', 'success')
-            return redirect(url_for('view_bookings'))
+            session['admin_logged_in'] = True
+            return redirect(url_for('admin_dashboard'))
         else:
-            flash('Invalid credentials', 'danger')
+            flash('Invalid credentials')
+            return redirect(url_for('admin_login'))
+
     return render_template('login.html')
 
-@app.route('/logout')
-def logout():
-    session.pop('admin', None)
-    flash('Logged out.', 'info')
-    return redirect(url_for('login'))
-
-@app.route('/bookings')
-def view_bookings():
-    if not session.get('admin'):
-        return redirect(url_for('login'))
+@app.route('/dashboard')
+def admin_dashboard():
+    if not session.get('admin_logged_in'):
+        return redirect(url_for('admin_login'))
 
     conn = sqlite3.connect('bookings.db')
     c = conn.cursor()
-    c.execute('SELECT * FROM bookings ORDER BY date, start_time')
+    c.execute("SELECT * FROM bookings ORDER BY date DESC")
     bookings = c.fetchall()
     conn.close()
     return render_template('bookings.html', bookings=bookings)
 
 @app.route('/export')
-def export_bookings():
-    if not session.get('admin'):
-        return redirect(url_for('login'))
+def export_excel():
+    if not session.get('admin_logged_in'):
+        return redirect(url_for('admin_login'))
 
     conn = sqlite3.connect('bookings.db')
-    df = pd.read_sql_query("SELECT * FROM bookings ORDER BY date, start_time", conn)
+    df = pd.read_sql_query("SELECT * FROM bookings", conn)
     conn.close()
 
     output = io.BytesIO()
@@ -117,8 +96,15 @@ def export_bookings():
         df.to_excel(writer, index=False, sheet_name='Bookings')
 
     output.seek(0)
-    return send_file(output, download_name='bookings.xlsx', as_attachment=True)
+    return send_file(output, download_name="venue_bookings.xlsx", as_attachment=True)
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    flash('Logged out')
+    return redirect(url_for('index'))
 
 if __name__ == '__main__':
     init_db()
-    app.run(debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(debug=True, host='0.0.0.0', port=port)
